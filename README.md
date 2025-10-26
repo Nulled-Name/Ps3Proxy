@@ -1,21 +1,38 @@
-# Ps3Proxy
-1) configurar el proxy en tu ps3
-AJUSTES -> AJUSTES DE RED -> AJUSTES DE CONEXIÓN A INTERNET -> PERSONALIZADO
-Y en servidor proxy le damos a usar y ingresamos estos datos:
-Dirección:
-Puerto:
-Al finalizar probamos conexión.
-!Importante¡
-Debe completarse la prueba de manera correcta.
+PS3Proxy
 
-2) buscamos actualización:
-AJUSTES -> ACTUALIZACIÓN DEL SISTEMA -> ACTUALIZAR MEDIANTE INTERNET 
-Debe encontrar la versión N° 49.00
-Le damos ok
-Le damos izquierda(a el acuerdo de usuario) y aceptamos
-Una vez aceptado le damos iniciar.
+Configuración
 
-Esperamos... (a que instale la actualización).
+1) Configurar el proxy en tu PS3
 
-3)una vez iniciada la ps3 desactivaremos el proxy(ya que no podremos usar el navegador)
-4) iremos al navegador y ingresamos lo siguiente:
+1. Ve a Ajustes → Ajustes de Red → Ajustes de Conexión a Internet → Personalizado
+2. En Servidor Proxy selecciona Usar e ingresa los siguientes datos:
+   · Dirección: [Tu dirección IP]
+   · Puerto: [Tu puerto]
+
+⚠️ Importante: La prueba de conexión debe completarse correctamente.
+
+2) Buscar actualización
+
+1. Ve a Ajustes → Actualización del Sistema → Actualizar mediante Internet
+2. Debe encontrar la versión N° 49.00
+3. Presiona OK
+4. Selecciona Izquierda (para aceptar el acuerdo de usuario) y Aceptar
+5. Presiona Iniciar
+
+⏳ Espera a que se complete la instalación de la actualización.
+
+3) Desactivar proxy
+
+Una vez iniciada la PS3, desactiva el proxy (no podrás usar el navegador con el proxy activado).
+
+4) Acceder al navegador
+
+1. Abre el navegador de la PS3
+2. Ingresa la siguiente dirección:
+   ```
+   
+   ```
+
+---
+
+Nota: Asegúrate de reemplazar [Tu dirección IP], [Tu puerto] y [Tu URL aquí] con los valores correspondientes de tu configuración.
