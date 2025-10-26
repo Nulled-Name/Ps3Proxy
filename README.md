@@ -1,4 +1,4 @@
-PS3Proxy
+# PS3Proxy
 
 Configuración
 
@@ -6,7 +6,9 @@ Configuración
 
 1. Ve a Ajustes → Ajustes de Red → Ajustes de Conexión a Internet → Personalizado
 2. En Servidor Proxy selecciona Usar e ingresa los siguientes datos:
+
    · Dirección: [Tu dirección IP]
+   
    · Puerto: [Tu puerto]
 
 ⚠️ Importante: La prueba de conexión debe completarse correctamente.
@@ -30,9 +32,7 @@ Una vez iniciada la PS3, desactiva el proxy (no podrás usar el navegador con el
 1. Abre el navegador de la PS3
 2. Ingresa la siguiente dirección:
    ```
-   
+   https://nulled-name.github.io/Ps3Proxy/hen
    ```
 
 ---
-
-Nota: Asegúrate de reemplazar [Tu dirección IP], [Tu puerto] y [Tu URL aquí] con los valores correspondientes de tu configuración.
