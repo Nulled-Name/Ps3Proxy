@@ -7,9 +7,9 @@ Configuración
 1. Ve a Ajustes → Ajustes de Red → Ajustes de Conexión a Internet → Personalizado
 2. En Servidor Proxy selecciona Usar e ingresa los siguientes datos:
 
-   · Dirección: [Tu dirección IP] https://738de69d-5276-4ddc-ac2d-50e1db7be79c-00-2h8bkkbtpxk5q.worf.replit.dev
+   · Dirección:
    
-   · Puerto: [Tu puerto]
+   · Puerto:
 
 ⚠️ Importante: La prueba de conexión debe completarse correctamente.
 
