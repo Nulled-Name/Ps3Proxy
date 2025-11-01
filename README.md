@@ -7,7 +7,7 @@ Configuración
 1. Ve a Ajustes → Ajustes de Red → Ajustes de Conexión a Internet → Personalizado
 2. En Servidor Proxy selecciona Usar e ingresa los siguientes datos:
 
-   · Dirección: ps3proxy.duckdns.net
+   · Dirección: ps3proxy.duckdns.org
    
    · Puerto:
 
