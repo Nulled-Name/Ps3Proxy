@@ -9,7 +9,7 @@ Configuración
 
    · Dirección: ps3proxy.duckdns.org
    
-   · Puerto:
+   · Puerto: 8080
 
 ⚠️ Importante: La prueba de conexión debe completarse correctamente.
 
@@ -23,9 +23,9 @@ Configuración
 
 ⏳ Espera a que se complete la instalación de la actualización.
 
-3) Desactivar proxy
+3) Desactivar proxy 
 
-Una vez iniciada la PS3, desactiva el proxy (no podrás usar el navegador con el proxy activado).
+Una vez iniciada la PS3, desactiva el proxy.
 
 4) Acceder al navegador
 
@@ -36,3 +36,5 @@ Una vez iniciada la PS3, desactiva el proxy (no podrás usar el navegador con el
    ```
 
 ---
+si te sirvió el proxy considera donar para el mantenimiento del proxy
+https://www.paypal.me/InShadow1
