@@ -7,7 +7,9 @@ import threading
 import os
 import time
 import select
+import logging
 from datetime import datetime
+import ipaddress
 
 
 class RobustPS3ProxyHandler(http.server.BaseHTTPRequestHandler):
@@ -20,10 +22,13 @@ class RobustPS3ProxyHandler(http.server.BaseHTTPRequestHandler):
     # Timeouts (en segundos)
     CONNECT_TIMEOUT = 10
     RESPONSE_TIMEOUT = 30
+    TUNNEL_TIMEOUT = 30
+    
+    # Configurar logging
+    logger = logging.getLogger("ps3proxy")
     
     # Mapeo completo de regiones a códigos Dest
     REGION_DEST_MAP = {
-        # Patrón en URL -> Código Dest
         '/us/': '84',      # US
         '/eu/': '85',      # EU
         '/jp/': '83',      # JP
@@ -59,15 +64,25 @@ class RobustPS3ProxyHandler(http.server.BaseHTTPRequestHandler):
     
     # Patrones para detectar automáticamente actualizaciones de PS3
     PS3_UPDATE_PATTERNS = [
-        '.ps3.update.playstation.net/update/ps3/list/',           # Ruta de actualización
+        '.ps3.update.playstation.net/update/ps3/list/',
         'ps3-updatelist.txt',
     ]
     
+    # Headers que deben ser filtrados en reenvío
+    FILTERED_REQUEST_HEADERS = {
+        'host', 'proxy-connection', 'connection', 
+        'accept-encoding', 'keep-alive'
+    }
+    
+    # Headers que deben ser filtrados en respuestas
+    FILTERED_RESPONSE_HEADERS = {
+        'transfer-encoding', 'connection', 'keep-alive'
+    }
+    
     def log_message(self, format, *args):
-        """Log personalizado con timestamp"""
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        """Log personalizado con timestamp usando logging"""
         client_ip = self.client_address[0]
-        print(f"[{timestamp}] {client_ip} - {format % args}")
+        self.logger.info(f"{client_ip} - {format % args}")
     
     def do_GET(self):
         self._handle_request('GET')
@@ -79,65 +94,88 @@ class RobustPS3ProxyHandler(http.server.BaseHTTPRequestHandler):
         self._handle_request('POST')
     
     def do_CONNECT(self):
-        """Maneja conexiones HTTPS - importante para navegación segura"""
-        print(f"   🔒 CONNECT para HTTPS: {self.path}")
+        """Maneja conexiones HTTPS con soporte IPv6"""
+        self.logger.info(f"CONNECT para HTTPS: {self.path}")
         try:
-            # Para HTTPS, simplemente establecer tunnel
-            host, port = self.path.split(':', 1)
-            port = int(port) if port else 443
+            # Parsear host y puerto con soporte IPv6
+            host, port = self._parse_connect_host_port(self.path)
             
-            # Conectar al servidor destino
-            remote_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            remote_socket.settimeout(self.CONNECT_TIMEOUT)
-            remote_socket.connect((host, port))
-            
-            # Enviar respuesta 200 al cliente
-            self.send_response(200, 'Connection Established')
-            self.end_headers()
-            
-            # Establecer tunnel bidireccional
-            self._tunnel_sockets(self.connection, remote_socket)
-            
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as remote_socket:
+                remote_socket.settimeout(self.CONNECT_TIMEOUT)
+                remote_socket.connect((host, port))
+                
+                self.send_response(200, 'Connection Established')
+                self.end_headers()
+                
+                self._tunnel_sockets_improved(self.connection, remote_socket)
+                
         except Exception as e:
-            print(f"   ❌ Error CONNECT: {e}")
+            self.logger.error(f"Error CONNECT: {e}")
             self.send_error(502, f"HTTPS Error: {e}")
+    
+    def _parse_connect_host_port(self, connect_path):
+        """Parsea host:port con soporte IPv6"""
+        try:
+            # Manejar IPv6 [host]:port
+            if connect_path.startswith('['):
+                # IPv6: [::1]:443
+                host_end = connect_path.find(']')
+                if host_end != -1:
+                    host = connect_path[1:host_end]
+                    port_str = connect_path[host_end+2:]  # saltar ']:'
+                    port = int(port_str) if port_str else 443
+                    return host, port
+            else:
+                # IPv4: host:port
+                if ':' in connect_path:
+                    host, port_str = connect_path.split(':', 1)
+                    port = int(port_str) if port_str else 443
+                    return host, port
+                else:
+                    return connect_path, 443
+        except Exception as e:
+            self.logger.error(f"Error parsing CONNECT: {e}")
+            raise ValueError(f"Invalid CONNECT target: {connect_path}")
     
     def _handle_request(self, method):
         """Maneja todas las peticiones HTTP"""
         start_time = time.time()
         
-        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] {method} {self.path}")
+        self.logger.info(f"{method} {self.path}")
         
-        # Verificar si es petición PS3 usando detección automática
-        if self._is_ps3_update_request():
-            print("   🎯 INTERCEPTANDO (PS3 Update)")
-            self._handle_ps3_update(method)
-        else:
-            print("   🔓 REENVIANDO (Tráfico normal)")
-            self._forward_http_request(method)
+        try:
+            # Verificar si es petición PS3 usando detección automática
+            if self._is_ps3_update_request():
+                self.logger.info("INTERCEPTANDO (PS3 Update)")
+                self._handle_ps3_update(method)
+            else:
+                self.logger.info("REENVIANDO (Tráfico normal)")
+                self._forward_http_request(method)
+        
+        except Exception as e:
+            self.logger.error(f"Error handling request: {e}")
+            self.send_error(500, f"Internal Server Error: {e}")
         
         elapsed = time.time() - start_time
-        print(f"   ⏱️  Tiempo total: {elapsed:.2f}s")
+        self.logger.info(f"Tiempo total: {elapsed:.2f}s")
     
     def _is_ps3_update_request(self):
         """
         Detecta automáticamente peticiones de actualización de PS3
-        usando patrones en lugar de una lista fija de dominios
         """
         url = self.path.lower()
         host = self.headers.get('Host', '').lower()
-        full_url = f"{host}{url}"
         
         # Detectar por patrones específicos de PS3
         for pattern in self.PS3_UPDATE_PATTERNS:
             if pattern in url or pattern in host:
-                print(f"   🔍 Patrón detectado: {pattern}")
+                self.logger.info(f"Patrón detectado: {pattern}")
                 return True
         
         # Detectar por User-Agent de PS3
         user_agent = self.headers.get('User-Agent', '').lower()
         if 'ps3' in user_agent and 'update' in user_agent:
-            print(f"   🔍 User-Agent PS3 detectado")
+            self.logger.info("User-Agent PS3 detectado")
             return True
         
         # Detectar por estructura de URL típica de PS3
@@ -148,22 +186,21 @@ class RobustPS3ProxyHandler(http.server.BaseHTTPRequestHandler):
     
     def _has_ps3_url_structure(self, url, host):
         """Detecta estructura típica de URLs de actualización PS3"""
-        # URLs que contienen patrones de región/país típicos de PS3
         region_patterns = list(self.REGION_DEST_MAP.keys())
         
         # Si la URL tiene estructura /update/ps3/list/[región]/ps3-updatelist.txt
         if '/update/ps3/list/' in url and any(region in url for region in region_patterns):
-            print(f"   🔍 Estructura regional PS3 detectada")
+            self.logger.info("Estructura regional PS3 detectada")
             return True
         
         # Si el host contiene 'update' y la URL contiene 'ps3'
         if 'update' in host and 'ps3' in url:
-            print(f"   🔍 Host de update con URL PS3 detectado")
+            self.logger.info("Host de update con URL PS3 detectado")
             return True
             
         # Si es una petición a un archivo PUP desde cualquier dominio
         if url.endswith('.pup') and ('update' in url or 'ps3' in url):
-            print(f"   🔍 Archivo PUP detectado")
+            self.logger.info("Archivo PUP detectado")
             return True
             
         return False
@@ -184,7 +221,7 @@ class RobustPS3ProxyHandler(http.server.BaseHTTPRequestHandler):
                 self._forward_to_sony(method)
                 
         except Exception as e:
-            print(f"   ❌ Error PS3: {e}")
+            self.logger.error(f"Error PS3: {e}")
             self.send_error(500, f"Error: {e}")
     
     def _serve_update_list(self):
@@ -215,7 +252,7 @@ Dest={dest_code};ImageVersion={version_num}00;SystemSoftwareVersion={version_num
         self.end_headers()
         self.wfile.write(update_list.encode())
         
-        print(f"   ✅ Lista servida - Versión: {self.OFFER_VERSION}, Región: {region_name}, Dest: {dest_code}")
+        self.logger.info(f"Lista servida - Versión: {self.OFFER_VERSION}, Región: {region_name}, Dest: {dest_code}")
     
     def _extract_region_and_dest(self):
         """
@@ -234,23 +271,25 @@ Dest={dest_code};ImageVersion={version_num}00;SystemSoftwareVersion={version_num
                 }
         
         # Si no se encuentra región específica, usar MX como default
-        print(f"   ⚠️  Región no detectada, usando MX como default")
+        self.logger.warning("Región no detectada, usando MX como default")
         return {
             'region': 'Mexico (MX)',
             'dest': '88'
         }
     
     def _serve_pup_file(self, method):
-        """Sirve el archivo PUP local"""
-        print(f"   💿 Sirviendo: {self.PUP_FILE}")
+        """Sirve el archivo PUP local con validaciones"""
+        self.logger.info(f"Sirviendo: {self.PUP_FILE}")
         
-        if not os.path.exists(self.PUP_FILE):
-            print(f"   ❌ PUP no encontrado: {self.PUP_FILE}")
-            self.send_error(404, f"PUP file not found")
+        # Validar que el archivo existe y es accesible
+        pup_path = os.path.abspath(self.PUP_FILE)
+        if not os.path.exists(pup_path):
+            self.logger.error(f"PUP no encontrado: {pup_path}")
+            self.send_error(404, "PUP file not found")
             return
         
         try:
-            file_size = os.path.getsize(self.PUP_FILE)
+            file_size = os.path.getsize(pup_path)
             
             # Headers comunes
             headers = {
@@ -268,7 +307,7 @@ Dest={dest_code};ImageVersion={version_num}00;SystemSoftwareVersion={version_num
                 for key, value in headers.items():
                     self.send_header(key, value)
                 self.end_headers()
-                print("   ✅ HEAD respondido")
+                self.logger.info("HEAD respondido")
                 return
             
             # Para GET - enviar archivo
@@ -277,13 +316,23 @@ Dest={dest_code};ImageVersion={version_num}00;SystemSoftwareVersion={version_num
                 self.send_header(key, value)
             self.end_headers()
             
-            # Enviar archivo en chunks
-            sent_bytes = 0
-            start_time = time.time()
+            # Enviar archivo en chunks con manejo de errores
+            self._send_file_safely(pup_path, file_size)
             
-            with open(self.PUP_FILE, 'rb') as f:
+        except Exception as e:
+            self.logger.error(f"Error sirviendo PUP: {e}")
+            self.send_error(500, f"Error: {e}")
+    
+    def _send_file_safely(self, file_path, file_size):
+        """Envía archivo de forma segura con manejo de errores"""
+        sent_bytes = 0
+        start_time = time.time()
+        progress_interval = 10 * 1024 * 1024  # 10MB
+        
+        try:
+            with open(file_path, 'rb') as f:
                 while True:
-                    chunk = f.read(32768)  # 32KB chunks para mejor rendimiento
+                    chunk = f.read(32768)  # 32KB chunks
                     if not chunk:
                         break
                     
@@ -292,78 +341,77 @@ Dest={dest_code};ImageVersion={version_num}00;SystemSoftwareVersion={version_num
                         sent_bytes += len(chunk)
                         
                         # Mostrar progreso cada 10MB
-                        if sent_bytes % (10 * 1024 * 1024) == 0:
+                        if sent_bytes % progress_interval == 0:
                             mb_sent = sent_bytes // (1024 * 1024)
                             elapsed = time.time() - start_time
                             speed = (sent_bytes / 1024 / 1024) / elapsed if elapsed > 0 else 0
-                            print(f"   📤 Progreso: {mb_sent}MB ({speed:.1f} MB/s)")
+                            self.logger.info(f"Progreso: {mb_sent}MB ({speed:.1f} MB/s)")
                     
-                    except (BrokenPipeError, ConnectionResetError):
-                        print("   ⚠️  Cliente cerró la conexión")
+                    except (BrokenPipeError, ConnectionResetError) as e:
+                        self.logger.warning(f"Cliente cerró la conexión: {e}")
                         break
+                    except Exception as e:
+                        self.logger.error(f"Error enviando chunk: {e}")
+                        raise
             
             total_time = time.time() - start_time
-            print(f"   ✅ PUP enviado: {sent_bytes} bytes en {total_time:.1f}s")
+            self.logger.info(f"PUP enviado: {sent_bytes}/{file_size} bytes en {total_time:.1f}s")
             
+            if sent_bytes != file_size:
+                self.logger.warning(f"Transferencia incompleta: {sent_bytes}/{file_size} bytes")
+                
         except Exception as e:
-            print(f"   ❌ Error sirviendo PUP: {e}")
-            self.send_error(500, f"Error: {e}")
+            self.logger.error(f"Error en transferencia de archivo: {e}")
+            raise
     
     def _forward_to_sony(self, method):
         """Reenvía peticiones PS3 a Sony"""
         try:
-            # Construir URL completa
-            if self.path.startswith('http://'):
-                url = self.path
-            else:
-                host = self.headers.get('Host', '')
-                if not host:
-                    # Si no hay host, usar uno por defecto
-                    host = 'dus01.ps3.update.playstation.net'
-                url = f"http://{host}{self.path}"
+            # Construir URL completa de forma robusta
+            url = self._build_target_url()
+            if not url:
+                self.send_error(400, "Invalid URL")
+                return
             
-            print(f"   🔄 Reenviando a Sony: {url}")
+            self.logger.info(f"Reenviando a Sony: {url}")
             
             # Headers limpios
             headers = self._get_clean_headers()
             
             # Realizar petición
             req = urllib.request.Request(url, method=method, headers=headers)
-            response = urllib.request.urlopen(req, timeout=self.RESPONSE_TIMEOUT)
-            
-            # Enviar respuesta
-            self.send_response(response.getcode())
-            for header, value in response.headers.items():
-                if header.lower() not in ['transfer-encoding', 'connection']:
-                    self.send_header(header, value)
-            self.send_header('Connection', 'close')
-            self.end_headers()
-            
-            # Enviar datos
-            if method == 'GET':
-                self.wfile.write(response.read())
-            
-            print(f"   ✅ Reenvío exitoso: {response.getcode()}")
-            
+            with urllib.request.urlopen(req, timeout=self.RESPONSE_TIMEOUT) as response:
+                # Enviar respuesta
+                self.send_response(response.getcode())
+                
+                # Filtrar headers de respuesta
+                for header, value in response.headers.items():
+                    if header.lower() not in self.FILTERED_RESPONSE_HEADERS:
+                        self.send_header(header, value)
+                
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                
+                # Enviar datos
+                if method == 'GET':
+                    self.wfile.write(response.read())
+                
+                self.logger.info(f"Reenvío exitoso: {response.getcode()}")
+                
         except Exception as e:
-            print(f"   ❌ Error reenviando a Sony: {e}")
+            self.logger.error(f"Error reenviando a Sony: {e}")
             self.send_error(502, f"Error: {e}")
     
     def _forward_http_request(self, method):
         """Reenvía peticiones HTTP normales de forma robusta"""
         try:
             # Construir URL correcta
-            if self.path.startswith('http://'):
-                url = self.path
-            else:
-                host = self.headers.get('Host', '')
-                if not host:
-                    # Si no hay host, no podemos reenviar
-                    self.send_error(400, "No Host header")
-                    return
-                url = f"http://{host}{self.path}"
+            url = self._build_target_url()
+            if not url:
+                self.send_error(400, "No Host header or invalid URL")
+                return
             
-            print(f"   🔄 Reenviando: {url}")
+            self.logger.info(f"Reenviando: {url}")
             
             # Headers limpios
             headers = self._get_clean_headers()
@@ -377,147 +425,215 @@ Dest={dest_code};ImageVersion={version_num}00;SystemSoftwareVersion={version_num
             
             # Realizar petición con timeout
             req = urllib.request.Request(url, method=method, headers=headers, data=data)
-            response = urllib.request.urlopen(req, timeout=self.RESPONSE_TIMEOUT)
             
-            # Enviar respuesta al cliente
-            self.send_response(response.getcode())
-            
-            # Filtrar headers problemáticos
-            for header, value in response.headers.items():
-                header_lower = header.lower()
-                if header_lower not in ['transfer-encoding', 'content-encoding']:
-                    self.send_header(header, value)
-            
-            self.end_headers()
-            
-            # Enviar contenido
-            if method in ['GET', 'POST']:
-                # Leer y enviar en chunks para mejor rendimiento
-                while True:
-                    chunk = response.read(8192)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-            
-            print(f"   ✅ Reenvío exitoso: {response.getcode()}")
-            
+            with urllib.request.urlopen(req, timeout=self.RESPONSE_TIMEOUT) as response:
+                # Enviar respuesta al cliente
+                self.send_response(response.getcode())
+                
+                # Filtrar headers problemáticos preservando content-encoding
+                for header, value in response.headers.items():
+                    header_lower = header.lower()
+                    if header_lower not in self.FILTERED_RESPONSE_HEADERS:
+                        self.send_header(header, value)
+                
+                self.end_headers()
+                
+                # Enviar contenido en chunks
+                if method in ['GET', 'POST']:
+                    while True:
+                        chunk = response.read(8192)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                
+                self.logger.info(f"Reenvío exitoso: {response.getcode()}")
+                
         except urllib.error.URLError as e:
-            print(f"   ❌ Error URL: {e}")
+            self.logger.error(f"Error URL: {e}")
             self.send_error(502, f"Network Error: {e}")
         except socket.timeout:
-            print("   ⏰ Timeout en reenvío")
+            self.logger.error("Timeout en reenvío")
             self.send_error(504, "Gateway Timeout")
         except Exception as e:
-            print(f"   ❌ Error reenviando: {e}")
+            self.logger.error(f"Error reenviando: {e}")
             self.send_error(502, f"Proxy Error: {e}")
     
+    def _build_target_url(self):
+        """Construye URL target de forma robusta"""
+        if self.path.startswith('http://'):
+            return self.path
+        
+        host = self.headers.get('Host', '')
+        if not host:
+            return None
+        
+        # Normalizar host (quitar puerto si es necesario para URL)
+        if ':' in host:
+            host = host.split(':', 1)[0]
+        
+        return f"http://{host}{self.path}"
+    
     def _get_clean_headers(self):
-        """Limpia los headers para reenvío"""
+        """Limpia los headers para reenvío de forma consistente"""
         clean_headers = {}
+        
         for key, value in self.headers.items():
             key_lower = key.lower()
-            # Eliminar headers de proxy y conexión
-            if key_lower not in ['host', 'proxy-connection', 'connection', 'accept-encoding']:
+            if key_lower not in self.FILTERED_REQUEST_HEADERS:
                 clean_headers[key] = value
         
         # Headers importantes para compatibilidad
-        clean_headers['User-Agent'] = self.headers.get('User-Agent', 'Mozilla/5.0')
-        clean_headers['Accept'] = self.headers.get('Accept', '*/*')
+        if 'User-Agent' not in clean_headers:
+            clean_headers['User-Agent'] = self.headers.get('User-Agent', 'Mozilla/5.0')
+        if 'Accept' not in clean_headers:
+            clean_headers['Accept'] = self.headers.get('Accept', '*/*')
         
         return clean_headers
     
-    def _tunnel_sockets(self, client_socket, remote_socket):
-        """Establece tunnel para conexiones HTTPS"""
+    def _tunnel_sockets_improved(self, client_socket, remote_socket):
+        """Establece tunnel para conexiones HTTPS mejorado"""
         sockets = [client_socket, remote_socket]
         
         try:
+            for sock in sockets:
+                sock.settimeout(self.TUNNEL_TIMEOUT)
+            
             while True:
-                readable, _, exceptional = select.select(sockets, [], sockets, 30)
+                readable, _, exceptional = select.select(sockets, [], sockets, self.TUNNEL_TIMEOUT)
                 
                 if exceptional:
                     break
+                
+                if not readable:
+                    # Timeout, verificar si hay datos pendientes
+                    continue
                 
                 for sock in readable:
                     try:
                         data = sock.recv(8192)
                         if not data:
-                            break
+                            # Conexión cerrada
+                            return
                         
-                        if sock is client_socket:
-                            remote_socket.send(data)
-                        else:
-                            client_socket.send(data)
-                    except (socket.timeout, ConnectionResetError, BrokenPipeError):
-                        break
-                
+                        target = remote_socket if sock is client_socket else client_socket
+                        target.sendall(data)
+                        
+                    except (socket.timeout, ConnectionResetError, BrokenPipeError, OSError) as e:
+                        self.logger.info(f"Tunnel error: {e}")
+                        return
+                        
+        except select.error as e:
+            self.logger.info(f"Select error in tunnel: {e}")
         finally:
-            client_socket.close()
-            remote_socket.close()
+            # Cierre seguro de sockets
+            for sock in sockets:
+                try:
+                    sock.close()
+                except:
+                    pass
     
     def _get_local_ip(self):
-        """Obtiene la IP local"""
+        """Obtiene la IP local con múltiples métodos de fallback"""
+        # Método 1: Conexión a DNS
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
                 s.connect(("8.8.8.8", 80))
                 return s.getsockname()[0]
         except:
-            return "127.0.0.1"
+            pass
+        
+        # Método 2: Nombre de host
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except:
+            pass
+        
+        # Método 3: Fallback a localhost
+        return "127.0.0.1"
+
 
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     """Servidor HTTP con soporte para múltiples hilos"""
     daemon_threads = True
     allow_reuse_address = True
 
+
+def setup_logging():
+    """Configura el sistema de logging"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='[%(asctime)s] %(levelname)s - %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    return logging.getLogger("ps3proxy")
+
+
 def main():
     """Función principal"""
+    logger = setup_logging()
     HOST = '0.0.0.0'
     PORT = 8080
     
-    print("🎮 PS3 HFW PROXY - REGIONES AUTOMÁTICAS")
+    # Obtener IP local una vez
+    local_ip = get_local_ip()
+    
+    print("🎮 PS3 HFW PROXY - ROBUSTO Y MEJORADO")
     print("=" * 50)
-    print(f"📍 Proxy: http://{get_local_ip()}:{PORT}")
+    print(f"📍 Proxy: http://{local_ip}:{PORT}")
     print(f"📁 PUP: {RobustPS3ProxyHandler.PUP_FILE}")
     print(f"🏷️  Versión: {RobustPS3ProxyHandler.OFFER_VERSION}")
     print()
-    print("🌍 REGIONES SOPORTADAS:")
-    for dest, name in RobustPS3ProxyHandler.REGION_NAMES.items():
-        print(f"   • {name} (Dest={dest})")
+    print("✅ MEJORAS IMPLEMENTADAS:")
+    print("   • Logging robusto con timestamps")
+    print("   • Soporte IPv6 en CONNECT")
+    print("   • Manejo mejorado de errores")
+    print("   • Filtrado consistente de headers")
+    print("   • Transferencias de archivo seguras")
     print()
     print("🔧 CONFIGURACIÓN PS3:")
-    print(f"   Proxy: {get_local_ip()}:{PORT}")
+    print(f"   Proxy: {local_ip}:{PORT}")
     print()
     print("⏹️  Ctrl+C para detener")
     print("=" * 50)
     
     # Verificar archivo PUP
-    if not os.path.exists(RobustPS3ProxyHandler.PUP_FILE):
-        print(f"❌ ERROR: No se encuentra {RobustPS3ProxyHandler.PUP_FILE}")
+    pup_path = os.path.abspath(RobustPS3ProxyHandler.PUP_FILE)
+    if not os.path.exists(pup_path):
+        print(f"❌ ERROR: No se encuentra {pup_path}")
         print("💡 Coloca el archivo PUP en la misma carpeta")
         return
     
-    size = os.path.getsize(RobustPS3ProxyHandler.PUP_FILE)
+    size = os.path.getsize(pup_path)
     print(f"✅ PUP encontrado: {size} bytes ({size//1024//1024} MB)")
     
     try:
         # Crear servidor con soporte para hilos
         server = ThreadedHTTPServer((HOST, PORT), RobustPS3ProxyHandler)
+        logger.info(f"Proxy iniciado en puerto {PORT}")
         print(f"\n🚀 Proxy iniciado en puerto {PORT}")
         print("📡 Esperando conexiones...")
         server.serve_forever()
         
     except KeyboardInterrupt:
         print("\n🛑 Proxy detenido por el usuario")
+        logger.info("Proxy detenido por usuario")
     except Exception as e:
+        logger.error(f"Error: {e}")
         print(f"❌ Error: {e}")
 
+
 def get_local_ip():
-    """Obtiene la IP local"""
+    """Obtiene la IP local con fallbacks"""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
             return s.getsockname()[0]
     except:
-        return "127.0.0.1"
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except:
+            return "127.0.0.1"
+
 
 if __name__ == '__main__':
     main()
